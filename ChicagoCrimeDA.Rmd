@@ -1,0 +1,767 @@
+---
+title: "Chicago Crime Data Analysis"
+author: "Divya Kampalli , Bhavya Sirobhushanam , Venkateshwar Reddy Kasturi"
+date: "`r Sys.Date()`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+  word_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+#Loading Necessary Libraries
+
+```{r}
+library(data.table)
+library(ggplot2)
+library(sf)
+library(dplyr)
+library(stringr)
+library(ggpubr)
+library(lubridate)
+library(tseries)
+library(Metrics)
+library(gridExtra)
+library(forecast)
+library(padr)
+library(plotly)
+library(patchwork)
+```
+
+#Data Preparation
+
+Import data
+```{r}
+
+Dataset <- fread(file = "C:/Users/bhavy/Documents/Bhavya Courseworks/semester 3/DPA/project/crimeanalysis.csv", header = T, sep = ",", na.strings = "")
+```
+
+Top 5 rows of the Dataset
+```{r}
+head(Dataset)
+```
+Structure of the Dataset
+```{r}
+str(Dataset)
+```
+
+Summary of Dataset
+```{r}
+summary(Dataset)
+```
+
+#Data Cleaning and Preprocessing
+
+Extracting 5 past years' data
+```{r}
+CrimesDF <- Dataset[Year > 2018]
+```
+
+Renaming some of the variables 
+```{r}
+setnames(CrimesDF, c("Case Number", "Primary Type", "Location Description", "Community Area"), c("Case", "Type", "Locdescrip", "Community"))
+```
+
+Checking if there are any Duplicates
+```{r}
+any(duplicated(CrimesDF[["Case"]]))
+```
+
+Removing any duplicates in Case Number and testing again to check if there are any duplicates. 
+```{r}
+CrimesDF <- CrimesDF[!duplicated(CrimesDF[["Case"]])]
+any(duplicated(CrimesDF[["Case"]]))
+```
+
+Testing for missing values
+```{r}
+any(is.na(CrimesDF))
+```
+
+Finding the missing values in each coloumn.
+```{r}
+colSums(is.na(CrimesDF))
+```
+
+Replacing all NAs with similar values
+```{r}
+CrimesDF$`Latitude` <- na.omit(CrimesDF$`Latitude`)[match(CrimesDF$`X Coordinate`, na.omit(CrimesDF$`X Coordinate`))]
+colSums(is.na(CrimesDF))
+```
+
+Removing NA in latitude, longitude, location, Case Number
+```{r}
+CrimesDF <- CrimesDF[!is.na(CrimesDF[["Latitude"]])]
+CrimesDF <- CrimesDF[!is.na(CrimesDF[["Case"]])]
+colSums(is.na(CrimesDF))
+```
+
+Replacing all NAs with similar records
+```{r}
+CrimesDF$`Locdescrip` <- na.omit(CrimesDF$`Locdescrip`)[match(CrimesDF$`Location`, na.omit(CrimesDF$`Location`))]
+CrimesDF$`District` <- na.omit(CrimesDF$`District`)[match(CrimesDF$`Beat`, na.omit(CrimesDF$`Beat`))]
+CrimesDF$`Ward` <- na.omit(CrimesDF$`Ward`)[match(CrimesDF$`Location`, na.omit(CrimesDF$`Location`))]
+CrimesDF$`Community` <- na.omit(CrimesDF$`Community`)[match(CrimesDF$`Location`, na.omit(CrimesDF$`Location`))]
+colSums(is.na(CrimesDF))
+CrimesDF <- CrimesDF[!is.na(CrimesDF[["Locdescrip"]])]
+any(is.na(CrimesDF))
+CrimesDF <- CrimesDF[which(Community != 0),] 
+```
+
+
+```{r}
+CrimesDF <- CrimesDF[, !c("ID", "IUCR", "Description", "FBI Code", "Block", "Ward", "X Coordinate", "Y Coordinate", "Updated On")]
+CrimesDF[["Date"]] <- parse_date_time(CrimesDF[["Date"]], orders = "mdY IMSp")
+```
+
+Create four time intervals and Extract hours
+```{r}
+tint <- c("0", "5.9", "11.9", "17.9", "23.9")
+
+hours <- hour(CrimesDF[["Date"]])
+
+CrimesDF[["Tint"]] <- cut(hours, breaks = tint, labels = c("0-5H", "6-11H", "12-17H", "18-24H"), include.lowest = T)
+```
+
+
+Create the column Day showing the weekday, month, season when the incident occurred
+```{r}
+CrimesDF[["Day"]] <- wday(CrimesDF[["Date"]], label = T)
+CrimesDF[["Month"]] <- month(CrimesDF[["Date"]], label = T)
+quarters <- quarter(CrimesDF$Date)
+sint <- c("0.9", "1.9", "2.9", "3.9", "4.9")
+CrimesDF[["Season"]] <- cut(quarters, breaks = sint, labels = c("SPRING", "SUMMER", "FALL", "WINTER"))
+```
+Regrouping similar crimes into one type
+```{r}
+CrimesDF[["Type"]] <- ifelse(CrimesDF[["Type"]] %in% c("CRIMINAL DAMAGE"), "DAMAGE", 
+                   ifelse(CrimesDF[["Type"]] %in% c("DECEPTIVE PRACTICE"), "DECEIVE",
+                   ifelse(CrimesDF[["Type"]] %in% c("KIDNAPPING", "OFFENSE INVOLVING CHILDREN", "HUMAN TRAFFICKING"), "HUMANCHILD",
+                   ifelse(CrimesDF[["Type"]] %in% c("NARCOTICS", "OTHER NARCOTIC VIOLATION"), "NARCOTICS", 
+                   ifelse(CrimesDF[["Type"]] %in% c("MOTOR VEHICLE THEFT"), "MOTO", 
+                   ifelse(CrimesDF[["Type"]] %in% c("OTHER OFFENSE"), "OTHER", 
+                   ifelse(CrimesDF[["Type"]] %in% c("CRIM SEXUAL ASSAULT", "PROSTITUTION", "SEX OFFENSE"), "SEX", 
+                   ifelse(CrimesDF[["Type"]] %in% c("GAMBLING", "INTERFERENCE WITH PUBLIC OFFICER", "INTIMIDATION", "LIQUOR LAW VIOLATION", "OBSCENITY", "PUBLIC INDECENCY", "PUBLIC PEACE VIOLATION", "STALKING", "NON-CRIMINAL", "NON-CRIMINAL (SUBJECT SPECIFIED)", "NON - CRIMINAL"), "SOCIETY", 
+                   ifelse(CrimesDF[["Type"]] %in% c("CRIMINAL TRESPASS"), "TRESPASS", 
+                   ifelse(CrimesDF[["Type"]] %in% c("CONCEALED CARRY LICENSE VIOLATION", "WEAPONS VIOLATION"), "WEAPONS", CrimesDF[["Type"]]))))))))))
+
+CrimesDF[["Locdescrip"]] <- ifelse(CrimesDF[["Locdescrip"]] %in% c("VEHICLE-COMMERCIAL", "VEHICLE - DELIVERY TRUCK", "VEHICLE - OTHER RIDE SERVICE", "VEHICLE - OTHER RIDE SHARE SERVICE (E.G., UBER, LYFT)", "VEHICLE NON-COMMERCIAL", "TRAILER", "TRUCK", "DELIVERY TRUCK", "TAXICAB", "OTHER COMMERCIAL TRANSPORTATION"), "VEHICLE", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("BAR OR TAVERN", "TAVERN", "TAVERN/LIQUOR STORE"), "TAVERN",
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("SCHOOL YARD", "SCHOOL, PRIVATE, BUILDING", "SCHOOL, PRIVATE, GROUNDS", "SCHOOL, PUBLIC, BUILDING", "SCHOOL, PUBLIC, GROUNDS", "COLLEGE/UNIVERSITY GROUNDS", "COLLEGE/UNIVERSITY RESIDENCE HALL"), "SCHOOL",
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("RESIDENCE", "RESIDENCE-GARAGE", "RESIDENCE PORCH/HALLWAY", "RESIDENTIAL YARD (FRONT/BACK)", "DRIVEWAY - RESIDENTIAL", "GARAGE", "HOUSE", "PORCH", "YARD"), "RESIDENCE", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("PARKING LOT", "PARKING LOT/GARAGE(NON.RESID.)", "POLICE FACILITY/VEH PARKING LOT"), "PARKING", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("OTHER", "OTHER RAILROAD PROP / TRAIN DEPOT", "ABANDONED BUILDING", "ANIMAL HOSPITAL", "ATHLETIC CLUB", "BASEMENT", "BOAT/WATERCRAFT", "CHURCH", "CHURCH/SYNAGOGUE/PLACE OF WORSHIP", "COIN OPERATED MACHINE", "CONSTRUCTION SITE", "SEWER", "STAIRWELL", "VACANT LOT", "VACANT LOT/LAND", "VESTIBULE", "WOODED AREA", "FARM", "FACTORY", "FACTORY/MANUFACTURING BUILDING", "FEDERAL BUILDING", "FIRE STATION", "FOREST PRESERVE", "GOVERNMENT BUILDING", "GOVERNMENT BUILDING/PROPERTY", "JAIL / LOCK-UP FACILITY", "LIBRARY", "MOVIE HOUSE/THEATER", "POOL ROOM", "SPORTS ARENA/STADIUM", "WAREHOUSE", "AUTO", "AUTO / BOAT / RV DEALERSHIP", "CEMETARY"), "OTHERS", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("COMMERCIAL / BUSINESS OFFICE"), "BIGBUSINESS", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("PARK PROPERTY"), "PARK", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("ATM (AUTOMATIC TELLER MACHINE)", "BANK", "CREDIT UNION", "CURRENCY EXCHANGE", "SAVINGS AND LOAN"), "BANK", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("HOTEL", "HOTEL/MOTEL"), "HOTEL", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("HOSPITAL", "HOSPITAL BUILDING/GROUNDS", "DAY CARE CENTER", "NURSING HOME", "NURSING HOME/RETIREMENT HOME", "MEDICAL/DENTAL OFFICE"), "HEALTH", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("ALLEY", "BOWLING ALLEY"), "ALLEY", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("CHA APARTMENT", "CHA HALLWAY/STAIRWELL/ELEVATOR", "CHA PARKING LOT", "CHA PARKING LOT/GROUNDS"), "CHA", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("CTA BUS", "CTA BUS STOP", "CTA GARAGE / OTHER PROPERTY", "CTA PLATFORM", "CTA STATION", "CTA TRACKS - RIGHT OF WAY", "CTA TRAIN", "CTA \"\"L\"\" TRAIN"), "CTA", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("AIRPORT BUILDING NON-TERMINAL - NON-SECURE AREA", "AIRPORT BUILDING NON-TERMINAL - SECURE AREA", "AIRPORT EXTERIOR - NON-SECURE AREA", "AIRPORT EXTERIOR - SECURE AREA", "AIRPORT PARKING LOT", "AIRPORT TERMINAL LOWER LEVEL - NON-SECURE AREA", "AIRPORT TERMINAL LOWER LEVEL - SECURE AREA", "AIRPORT TERMINAL MEZZANINE - NON-SECURE AREA", "AIRPORT TERMINAL UPPER LEVEL - NON-SECURE AREA", "AIRPORT TERMINAL UPPER LEVEL - SECURE AREA", "AIRPORT TRANSPORTATION SYSTEM (ATS)", "AIRPORT VENDING ESTABLISHMENT", "AIRPORT/AIRCRAFT", "AIRCRAFT"), "AIRPORT", 
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("APPLIANCE STORE", "BARBERSHOP", "CAR WASH", "CLEANING STORE", "CONVENIENCE STORE", "DEPARTMENT STORE", "DRUG STORE", "GARAGE/AUTO REPAIR", "GAS STATION", "GAS STATION DRIVE/PROP.", "GROCERY FOOD STORE", "NEWSSTAND", "OFFICE", "PAWN SHOP", "RETAIL STORE", "SMALL RETAIL STORE"), "STORE",
+                   ifelse(CrimesDF[["Locdescrip"]] %in% c("BRIDGE", "DRIVEWAY", "GANGWAY", "HIGHWAY/EXPRESSWAY", "LAKEFRONT/WATERFRONT/RIVERBANK", "SIDEWALK", "STREET", "HALLWAY"), "STREET",
+                   CrimesDF[["Locdescrip"]])))))))))))))))))
+```
+
+Converting DataTable into Dataframe and normalising the values. 
+```{r}
+CrimesDF <- as.data.frame(CrimesDF)
+CrimesDF <- CrimesDF[c("Case", "Date", "Year", "Month", "Day", "Season", "Tint", "Type", "Arrest", "Domestic", "Locdescrip", "Beat", "District", "Community", "Latitude", "Longitude", "Location")]
+CrimesDF[, c("Beat", "Type", "District", "Community", "Month", "Day", "Locdescrip")] <- lapply(CrimesDF[, c("Beat", "Type", "District", "Community", "Month", "Day", "Locdescrip")], as.factor)
+```
+
+```{r}
+options(scipen=200)
+```
+
+```{r}
+crimes <- data.frame(Dataset) %>% 
+  select(c(Date, Primary.Type)) %>% 
+  mutate(Primary.Type = as.factor(Primary.Type),
+         Date = mdy_hms(Date), 
+         Date = floor_date(Date, unit = "hours")) %>% #takes a date-time object and rounds it down to hours unit
+  arrange(Date)
+```
+
+Types and number of crimes
+```{r}
+p1 <- CrimesDF %>%
+  group_by(Type) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Type, y = Count)) +
+  geom_bar(aes(x = reorder(Type, Count), y = Count), stat = "identity", fill = "#6495ED", width = 0.3, position=position_dodge(0.4)) + 
+  coord_flip() + 
+  labs(x = "Number of crimes", y = "Type", title = "Evolution of number of crimes for different types") +
+  theme_minimal() +
+  theme(axis.title.x=element_blank()) +
+  theme(axis.title.y=element_blank())
+p1
+
+```
+
+
+```{r}
+crimes %>% 
+  count(Primary.Type, sort = T) %>% 
+  head(5) %>% 
+  ggplot(aes(x = n, y = reorder(Primary.Type, n))) +
+  geom_col()
+  labs(title = 'Top 5 Crimes in Chicago', 
+       x = 'Number of Crimes', 
+       y = 'Crimes')
+```
+From the above plot, we can see that "THEFT" is the highest occuring crime. 
+Let's do Time series Analysis on THEFT. 
+
+#Time series analysis for Theft
+Create Prediction Time Frame
+We are taking only 5 years data so that it will be accurate 
+```{r}
+theft_crime <- crimes %>% 
+  filter(Primary.Type == 'THEFT') %>% 
+  group_by(Date) %>% 
+  summarise(Theft = n()) %>% 
+  filter(Date >= '2018-01-01' & Date <= '2022-12-31')
+```
+
+Printing range of dates, head and tail
+```{r}
+head(theft_crime, 5)
+tail(theft_crime, 5)
+range(theft_crime$Date)
+```
+
+```{r}
+range(theft_crime$Date)
+```
+
+```{r}
+theft_crime <- theft_crime %>% 
+  pad(start_val = ymd_hms("2018-01-01 00:00:00"), end_val = ymd_hms("2021-12-31 23:00:00")) %>% 
+  replace(., is.na(.), 0)
+```
+
+
+To create a time-series model, we need to create a time-series object from our train data. Time-series object will be based on theft as it is the one that we are going to predict, we set the frequency to be 24 as it is total hour of reported crime for 1 day.
+```{r}
+theft_ts <- ts(theft_crime$Theft, frequency = 24)
+```
+
+
+```{r}
+Theft_plot <- theft_crime %>%
+   ggplot(aes(x = Date, y = Theft)) +
+   geom_line(aes(color = "theft")) +
+   scale_x_datetime(name = "Date", date_breaks = "1 year") +
+   scale_y_continuous(breaks = seq(0, 400, 100)) + 
+   theme_minimal() +
+   labs(title = "Chicago Theft Crime", subtitle = "2018 - 2022")
+ 
+ ggplotly(Theft_plot)
+```
+
+Now, we will use autoplot to see the trend and sesonality
+```{r}
+theft_ts_ap <- theft_ts %>%
+  tail(365) %>%
+  decompose()
+theft_ts_ap %>%
+  autoplot()
+```
+
+Upon examining the plot, it becomes evident that the trend still reveals certain patterns, resembling a seasonal nature. This suggests the existence of additional seasonality patterns that haven't been captured by the current visualization. To address this, we aim to construct a Multi-Seasonal Time Series Object.
+
+Create and Decompose MSTS Object
+```{r}
+theft_multi <- msts(theft_crime$Theft, seasonal.periods = c(24, # Daily
+                                                            24*7, # Weekly
+                                                            24*30)) # Monthly
+
+theft_multi_dec <- theft_multi %>%
+  mstl()
+theft_multi_dec %>%
+  tail(365) %>%
+  autoplot()
+```
+
+From the plot above, we can see the trend of the Theft Crime is already going smooth. The Theft Crime trend itself is decreasing in the last years. 
+
+#Seasonality Analysis
+```{r}
+theft_multi_dec <- theft_multi %>% mstl()
+df_theft_multi <- as.data.frame(theft_multi_dec)
+df_theft_multi = as.data.frame(theft_multi_dec)
+```
+
+Hourly Seasonality
+```{r}
+HourlyPlot <- df_theft_multi %>%
+  mutate(day = theft_crime$Date) %>%
+  group_by(day) %>%
+  summarise(seasonal = sum(Seasonal24 + Seasonal168 + Seasonal720)) %>%
+  head(24*7) %>%
+  ggplot(aes(x = day, y = seasonal)) +
+  geom_point(col = "maroon") + 
+  geom_line(col = "blue") +
+  theme_minimal()
+HourlyPlot
+```
+From the above graph, we can see that thefts are occurring more during midday and falling during night. 
+
+
+Daily Seasonality
+```{r}
+
+DailyPlot <- df_theft_multi %>%
+  mutate(day = wday(theft_crime$Date, label = T)) %>%
+  group_by(day) %>%
+  summarise(seasonal = sum(Seasonal24 + Seasonal168 + Seasonal720)) %>%
+  ggplot(aes(x = day, y = seasonal)) +
+  geom_col() +
+  theme_minimal()
+DailyPlot
+```
+From the Daily Seasonality Graph, we can see that theft count increases from wednesday and reaches its peak on friday and will fall. The least number of thefts are on sunday. 
+
+Monthly seasonality 
+```{r}
+MonthlyPlot <- df_theft_multi %>%
+  mutate(day = theft_crime$Date, month = month(theft_crime$Date, label = T)) %>%
+  group_by(month) %>%
+  summarise(seasonal = sum(Seasonal24 + Seasonal168 + Seasonal720)) %>%
+  head(24*30) %>%
+  ggplot(aes(x = month, y = seasonal)) +
+  geom_point() + geom_col() +
+  theme_minimal()
+MonthlyPlot
+```
+From the above graph, we can see that the Highest number of crimes occurred in July. 
+
+In summary
+We have successfully predicted the frequency of theft crimes based on our analysis. It is reasonable to conclude that theft crime will probably start to rise at 10 a.m., peak at 5 p.m. (after business hours), and then continue to rise until 12 a.m. More crimes occur on Fridays. The actual crime is more likely to occur between June and October.    
+
+Similarly, we can do Time series analysis for each crime. 
+
+#Analysis and Visualisation
+
+Plotting Number of Crimes versus Year
+```{r}
+# Detach plyr if it's loaded and not required
+#if ("package:plyr" %in% search()) {
+#  detach("package:plyr", unload=TRUE)
+#}
+
+CrimesDF %>%
+  dplyr::group_by(Year) %>%
+  dplyr::summarise(Count = n()) %>%
+  ggplot(aes(x = Year, y = Count)) +
+  geom_line(colour = "grey") +
+  geom_point(colour = "grey") +
+  geom_bar(aes(x = Year, y = Count), stat = "identity", fill = "blue", width = 0.3, position=position_dodge(0.4)) +
+  labs(x = "Year", y = "Number of Crimes", title = "Evolution of Number of Crimes") +
+  geom_text(aes(x = Year, y = Count, label = Count), size = 3, vjust = -1, position = position_dodge(0.9)) +
+  theme_minimal() +
+  theme(axis.title.x=element_blank(), axis.title.y=element_blank())
+```
+
+The number of cases decreased from 2019 to 2020 and the trend increased after 2021. 
+
+By time intervals
+```{r}
+TimeIntervalsPlot <- CrimesDF %>%
+  group_by(Tint) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Tint, y = Count)) +
+  geom_bar(aes(x = Tint, y = Count), stat = "identity", fill = "blue", width = 0.3, position=position_dodge(0.4)) +
+  labs(x = "Time intervals", y = "Number of crimes", title = "Evolution by time intervals") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75,vjust = 1,hjust = 1)) + 
+  theme(axis.title.x=element_blank()) +
+  theme(axis.title.y=element_blank())
+print(TimeIntervalsPlot)
+```
+From the above plot, we can see that the most number of crimes are happening from 12-5 and the trend decreases later. 
+
+By WeekDays
+```{r}
+WeekDaysPlot <- CrimesDF %>%
+  group_by(Day) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = factor(Day, level = c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")), y = Count)) +
+  geom_bar(stat = "identity", fill = "blue", width = 0.3, position = position_dodge(0.4)) +
+  labs(x = "Weekdays", y = "Number of crimes", title = "Evolution by weekdays") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75, vjust = 1, hjust = 1)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank())
+print(WeekDaysPlot)
+```
+By the above graph we can see that the trend is almost the same across all the days. There is a slight increase of crimes on fridays and saturdays. 
+
+By Months
+```{r}
+MonthPlot <- CrimesDF %>%
+  group_by(Month) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = factor(Month, level = c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")), y = Count)) +
+  geom_bar(stat = "identity", fill = "blue", width = 0.3, position = position_dodge(0.4)) +
+  labs(x = "Months", y = "Number of crimes", title = "Evolution by months") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75, vjust = 1, hjust = 1)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank())
+print(MonthPlot)
+```
+Crimes were more likely to happen in June to August and are less likely to happen in December,  February. 
+
+
+
+```{r}
+# By seasons
+p4 <- CrimesDF %>%
+  group_by(Season) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Season, y = Count)) +
+  geom_bar(aes(x = factor(Season, level = c("SPRING", "SUMMER", "FALL", "WINTER")), y = Count), stat = "identity", fill = "blue", width = 0.3, position=position_dodge(0.4)) +
+  labs(x = "Seasons", y = "Number of crimes", title = "Evolution by seasons") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75,vjust = 1,hjust = 1)) +
+  theme(axis.title.x=element_blank()) +
+  theme(axis.title.y=element_blank())
+
+# Combine plots into one plot
+print(p4)
+
+```
+Crimes are more likely to happen in fall and less likely to happen in winter. 
+
+Top 5 most frequent Crime areas
+```{r}
+top5_Places <- CrimesDF %>%
+  group_by(Locdescrip) %>%
+  summarise(Count = n()) %>%
+  arrange(desc(Count)) %>%
+  head(5)  
+
+plot_top5_Places <- top5_Places %>%
+  ggplot(aes(x = reorder(Locdescrip, Count), y = Count)) +
+  geom_bar(stat = "identity", fill = "blue", width = 0.3, position = position_dodge(0.4)) +
+  labs(x = "Places", y = "Number of crimes", title = "Top 5 most frequent places") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75, vjust = 1, hjust = 1)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank())
+plot_top5_Places
+```
+```{r}
+print(top5_Places)
+```
+Street is the top place where crime can happen. Dont think your apartment/residence is safe. The next place where crimes could take place is apartment followed by residence. 
+
+
+Bottom 5  most frequent Crime areas
+```{r}
+bottom5_places <- CrimesDF %>%
+  group_by(Locdescrip) %>%
+  summarise(Count = n()) %>%
+  arrange(Count) %>%
+  head(5)  # Select the bottom 5 places
+
+plot_bottom5_places <- bottom5_places %>%
+  ggplot(aes(x = reorder(Locdescrip, Count), y = Count)) +
+  geom_bar(stat = "identity", fill = "blue", width = 0.3, position = position_dodge(0.4)) +
+  labs(x = "Places", y = "Number of crimes", title = "Bottom 5 most frequent places") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 75, vjust = 1, hjust = 1)) +
+  theme(axis.title.x = element_blank()) +
+  theme(axis.title.y = element_blank())
+plot_bottom5_places
+```
+```{r}
+print(bottom5_places)
+```
+Least amount of crimes happen in the above places. 
+
+
+```{r}
+shapefile_path <- "C:/Users/bhavy/Documents/Bhavya Courseworks/semester 3/DPA/project/Boundaries - Community Areas (current) (1)/geo_export_e07c1c74-44b6-459c-98d9-e8c9587ea2b6.shp"
+mapcomu <- st_read(shapefile_path)
+names(mapcomu)
+
+temp <- CrimesDF %>%
+  group_by(Community) %>%
+  summarise(Count = n())
+temp2df <- left_join(st_as_sf(mapcomu), temp, by = c("area_numbe" = "Community"))
+locplot <- ggplot(data = temp2df) +
+  geom_sf(aes(fill = Count), color = "black", size = 0.25) +
+  scale_fill_gradient(low = "white", high = "red") +
+  labs(title = "Number of crimes per community") +
+  theme_void() +
+  theme(legend.position = "bottom")
+
+dfpolice <- fread(file = "C:/Users/bhavy/Documents/Bhavya Courseworks/semester 3/DPA/project/Police_Stations_-_Map.csv", header = T, sep = ",", na.strings = "")
+dfpolice$LOCATION <- gsub("[(*)]", "", dfpolice$LOCATION)
+policeloc <- str_split_fixed(dfpolice$LOCATION, ", ", 2)
+policeloc <- as.data.frame(policeloc)
+colnames(policeloc) <- c("lat", "long")
+policeloc$lat <- as.numeric(as.character(policeloc$lat))
+policeloc$long <- as.numeric(as.character(policeloc$long))
+policeloc$id <- dfpolice$DISTRICT
+
+locplot <- locplot +
+  geom_point(data = policeloc, aes(x = long, y = lat), size = 1, shape = 24, fill = "black")
+```
+Checking Number of Commuinities and count of crimes in each Community 
+```{r}
+length(unique(CrimesDF[["Community"]]))
+table(CrimesDF[["Community"]])
+```
+
+```{r}
+locplot
+```
+From the above plot, we can see that Austin has highest number of crimes(63537). 
+
+Evolution over years
+```{r}
+p2 <- CrimesDF %>% 
+  group_by(Year, Type) %>% 
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Year, y = Count, fill = Type)) + 
+  geom_area() +
+  labs(x = "Years", y = "Number of crimes", title = "Evolution of crime types over years")
+p2
+```
+From the above graph we can see the evolution of crime types over the years. 
+
+Evolution of crime types over years multiplots
+```{r}
+CrimesDF %>% 
+  group_by(Year, Type) %>% 
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Year, y = Count)) + 
+  geom_smooth(method = "lm") + 
+  geom_point()+
+  facet_wrap(~Type, ncol = 4, scales = "free") + 
+  labs(x = "Years", y = "Number of crimes", title = "Evolution of crime types over years") 
+```
+
+
+Evolution of crime by time intervals
+```{r}
+CrimesDF[, c("Month", "Day", "Season", "Tint")] <- lapply(CrimesDF[, c("Month", "Day", "Season", "Tint")], as.character)
+p1 <- CrimesDF %>%
+  group_by(Type, Tint) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Tint, y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Time intervals", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by time intervals") +
+  theme_bw() +
+  theme(panel.grid.major =element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+print(p1)
+```
+From the above heatmap we can see that theft is the highest at time interval 12pm to 5pm. 
+
+Evolution of crime by weekdays
+```{r}
+
+p2 <- CrimesDF %>%
+  group_by(Type, Day) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Day, y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Weekdays", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by weekdays") +
+  theme_bw() +
+  theme(panel.grid.major =element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+print(p2)
+```
+From the above heatmap, we can see that theft is high in amost all days except Sunday and it is contrary for battery. 
+
+Evolution of crime by months
+```{r}
+p3 <- CrimesDF %>%
+  group_by(Type, Month) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Month, y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Months", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by months") +
+  theme_bw() +
+  theme(panel.grid.major =element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+print(p3)
+```
+From the above heatmap, we can see that the highest number of thefts are in July.
+
+Evolution of crime by Seasons
+```{r}
+p4 <- CrimesDF %>%
+  group_by(Type, Season) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Season, y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Seasons", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by seasons") +
+  theme_bw() +
+  theme(panel.grid.major =element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+print(p4)
+```
+From the above heatmap, we can see that the highest number of thefts are in Fall
+
+
+Top 10 most frequent places for Crimes
+```{r}
+top10P <- head(names(sort(table(CrimesDF$Locdescrip), decreasing = TRUE)), 10)
+top10T <- head(names(sort(table(CrimesDF$Type), decreasing = TRUE)), 10)
+filter(CrimesDF, Locdescrip %in% top10P) %>%
+  filter(Type %in% top10T) %>%
+  group_by(Type, Locdescrip) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = reorder(Locdescrip, Count), y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Places", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by places") +
+  theme_bw() +
+  theme(
+    panel.grid.major = element_line(colour = NA),
+    panel.grid.minor = element_line(colour = NA),
+    axis.text.x = element_text(angle = 45, vjust = 0.1, hjust = 0.1)  # Diagonal X-axis labels
+  )
+
+```
+
+
+Top10 most dangerous community areas
+```{r}
+top10C <- head(names((sort(table(CrimesDF$Community), decreasing = TRUE))), 10)
+filter(CrimesDF, Type %in% top10T) %>%
+  filter(Community %in% top10C) %>%
+  group_by(Type, Community) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = reorder(Community, Count), y = reorder(Type, Count))) +
+  geom_tile(aes(fill = Count)) + 
+  scale_x_discrete("Community areas", expand = c(0, 0), position = "top") +
+  scale_y_discrete("Crime types", expand = c(0, -2)) +
+  scale_fill_gradient("Number of crimes", low = "white", high = "red") +
+  ggtitle("Evolution by areas") +
+  theme_bw() +
+  theme(panel.grid.major =element_line(colour = NA), panel.grid.minor = element_line(colour = NA))
+```
+
+
+
+#Analysis of Arrest Rate
+
+Arrest rate over years
+```{r}
+temp <- CrimesDF %>%
+  filter(Arrest == T) %>%
+  group_by(Year) %>%
+  summarise(Count = n())
+
+temp$rate <- lapply(temp$Count, function(x) x / nrow(CrimesDF))
+temp$rate <- as.numeric(temp$rate)
+
+ggplot(temp, aes(x = Year, y = rate)) + 
+  geom_line() +  
+  theme_minimal() +
+  theme(axis.title.x=element_blank()) +
+  theme(axis.title.y=element_blank())
+```
+There is a steady decrease of arrest rate from 2019 to 2020 and after 2021 it slowly increased. 
+
+Number of arrests in top 5 dangerous areas and arrest rate in that area
+```{r}
+top5C <- head(names(sort(table(CrimesDF$Community), decreasing = TRUE)), 5)
+crime_plot <- filter(CrimesDF, Community %in% top5C) %>%
+  group_by(Year, Community) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Year, y = Count)) +
+  geom_smooth(method = "lm") + 
+  geom_point() +
+  facet_wrap(~Community, ncol = 2, scales = "free") + 
+  labs(x = "Years", y = "Number of crimes", title = "Evolution of number of crimes in different community areas over years")
+arrest_data <- CrimesDF %>%
+  filter(Arrest == TRUE, Community %in% top5C) %>%
+  group_by(Year, Community) %>%
+  summarise(Count = n()) %>%
+  mutate(rate = Count / nrow(CrimesDF))
+arrest_plot <- ggplot(arrest_data, aes(x = Year, y = rate)) + 
+  geom_line() + 
+  facet_wrap(~Community, ncol = 2, scales = "free") + 
+  labs(x = "Years", y = "Crime rates", title = "Evolution of arrested crime rates in different community areas over years")
+combined_plot <- crime_plot + arrest_plot + plot_layout(ncol = 2)
+combined_plot
+```
+
+
+Arrest trend per crime
+```{r}
+temp <- filter(CrimesDF, Arrest == T) %>%
+  group_by(Year, Type) %>%
+  summarise(Count = n())
+
+temp$rate <- lapply(temp$Count, function(x) x / nrow(CrimesDF))
+temp$rate <- as.numeric(temp$rate)
+
+ggplot(temp, aes(x = Year, y = rate, colour = Type)) + 
+  geom_line()
+```
+
+There is a steady decrease in the number of crimes even in the most dangerous communities. But there was also significant reduction in the arrest rate. This shows the police inefficiency. 
+
+
+Top 5 areas with least crime rate and arrest rate
+```{r}
+bottom5C <- tail(names(sort(table(CrimesDF$Community), decreasing = TRUE)), 5)
+
+crime_plot_bottom5 <- filter(CrimesDF, Community %in% bottom5C) %>%
+  group_by(Year, Community) %>%
+  summarise(Count = n()) %>%
+  ggplot(aes(x = Year, y = Count)) +
+  geom_smooth(method = "lm") + 
+  geom_point() +
+  facet_wrap(~Community, ncol = 2, scales = "free") + 
+  labs(x = "Years", y = "Number of crimes", title = "Evolution of number of crimes in different community areas over years")
+
+arrest_data_bottom5 <- CrimesDF %>%
+  filter(Arrest == TRUE, Community %in% bottom5C) %>%
+  group_by(Year, Community) %>%
+  summarise(Count = n()) %>%
+  mutate(rate = Count / nrow(CrimesDF))
+arrest_plot_bottom5 <- ggplot(arrest_data_bottom5, aes(x = Year, y = rate)) + 
+  geom_line() + 
+  facet_wrap(~Community, ncol = 2, scales = "free") + 
+  labs(x = "Years", y = "Crime rates", title = "Evolution of arrested crime rates in different community areas over years")
+combined_plot_bottom5 <- crime_plot_bottom5 + arrest_plot_bottom5 + plot_layout(ncol = 2)
+```
+```{r}
+combined_plot_bottom5
+```
+
+From the above graph we can see that the crime rate is steadily decreasing in the top 5 safe areas. Except in 18 and 47 where we have steady decrease in the arrest rate, all the other areas have pretty good arrest rate. 
+
+From this we can conclude that 
+The best areas to live in Chicago with good arrest rate 
+1. Edison Park
+2. Forest Glen
+3. Mount Greenwood. 
+
+
